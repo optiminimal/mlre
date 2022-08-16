@@ -1,4 +1,4 @@
--- mlre v1.3.4 @sonocircuit
+-- mlre v1.3.5 @sonocircuit
 -- llllllll.co/t/mlre
 --
 -- an adaption of
@@ -27,6 +27,7 @@ local trksel = 0
 local dstview = 0
 local trsp = 1
 local ledview = 1
+local flash = false
 local quantize = 0
 local oneshot_on = 1
 local oneshot_rec = false
@@ -89,7 +90,7 @@ local ePATTERN = 9
 
 local div = 16
 local div_options = {"1bar", "1/2", "1/3", "1/4", "1/6", "1/8", "1/16", "1/32"}
-local div_values = {1, 2, 3, 4, 6, 8, 16, 32}
+local div_values = {1, 1/2, 1/3, 1/4, 1/6, 1/8, 1/16, 1/32}
 
 function event_record(e)
   for i = 1, 8 do
@@ -117,18 +118,26 @@ end
 
 function update_q_clock()
   while true do
-    clock.sync(1 / div)
+    clock.sync(div)
     event_q_clock()
   end
 end
 
 function event_q_clock()
   if #quantize_events > 0 then
-    for k,e in pairs(quantize_events) do
+    for k, e in pairs(quantize_events) do
       if e.t ~= ePATTERN then event_record(e) end
       event_exec(e)
     end
     quantize_events = {}
+  end
+end
+
+function clock.tempo_change_handler()
+  for i = 1, 6 do
+    if track[i].tempo_map == 1 then
+      clip_resize(i)
+    end
   end
 end
 
@@ -146,6 +155,7 @@ function event_exec(e)
       track[e.i].play = 1
       softcut.play(e.i, 1)
       softcut.rec(e.i, 1)
+      toggle_transport()
       clock.run(
       function()
         clock.sleep(declick)
@@ -172,6 +182,10 @@ function event_exec(e)
     track[e.i].play = 1
     softcut.play(e.i, 1)
     softcut.rec(e.i, 1)
+    toggle_transport()
+    if params:get("auto_rand_play") == 2 and track[e.i].sel == 1 then
+      randomize(e.i)
+    end
     clock.run(
     function()
       clock.sleep(declick)
@@ -481,14 +495,6 @@ function clip_resize(i) -- resize clip length oder track speed according to t_ma
   end
 end
 
-function update_track_tempo()
-  for i = 1, 6 do
-    if track[i].tempo_map == 1 then
-      clip_resize(i)
-    end
-  end
-end
-
 -- softcut functions
 function set_rec(n) -- set softcut rec and pre levels
   if track[n].fade == 0 then
@@ -752,10 +758,19 @@ function toggle_playback(i)
     e.t = eSTART
     e.i = i
     event(e)
-    if params:get("midi_trnsp") == 2 and transport_run == false then
+  end
+end
+
+function toggle_transport()
+  if transport_run == false then
+    if params:get("midi_trnsp") == 2 then
       m:start()
-      transport_run = true
     end
+    if params:get("clock_source") == 1 then
+      clock.internal.start()
+      print("clock reset")
+    end
+    transport_run = true
   end
 end
 
@@ -769,8 +784,9 @@ function stopall() -- stop all tracks and send midi stop if set in params
   end
   if params:get("midi_trnsp") == 2 then
     m:stop()
-    transport_run = false
   end
+  transport_run = false
+  print("transport stop")
 end
 
 function altrun() -- alt run function for selected tracks
@@ -859,7 +875,7 @@ function oneshot(cycle) -- called by clock coroutine at threshold
     track[oneshot_on].oneshot = 0
   end
   set_rec(oneshot_on)
-  if track[oneshot_on].sel == 1 and params:get("auto_rand") == 2 and oneshot_rec == true then --randomize selected tracks
+  if track[oneshot_on].sel == 1 and params:get("auto_rand_rec") == 2 and oneshot_rec == true then --randomize selected tracks
     randomize(oneshot_on)
   end
   tracktimer:stop()
@@ -909,7 +925,7 @@ function chop(i) -- called when rec is toggled
       clip[track[i].clip].reset = l
       clip[track[i].clip].info = "length: "..string.format("%.2f", l).."s"
     end
-    if track[i].sel == 1 and params:get("auto_rand") == 2 then --randomize selected tracks
+    if track[i].sel == 1 and params:get("auto_rand_rec") == 2 then --randomize selected tracks
       randomize(i)
     end
     oneshot_rec = false
@@ -1035,6 +1051,21 @@ function ledpulse()
   end
 end
 
+function barpulse()
+  while true do
+    clock.sync(4)
+    flash = true
+    dirtygrid = true
+    clock.run(
+      function()
+        clock.sleep(0.1)
+        flash = false
+        dirtygrid = true
+      end
+    )
+  end
+end
+
 function show_message(message)
   clock.run(function()
     view_message = message
@@ -1078,7 +1109,7 @@ end
 init = function()
 
 -- params for "globals"
-  params:add_separator("global")
+  params:add_separator("global_params", "global")
 
   -- params for scales
   params:add_option("scale", "scale", scale_options, 1)
@@ -1092,7 +1123,7 @@ init = function()
   params:add_option("t_map_mode", "tempo-map mode", {"resize", "repitch"}, 1)
 
   -- midi params
-  params:add_group("macros", 2)
+  params:add_group("macro_params", "macros", 2)
   -- event recording slots
   params:add_option("slot_assign", "macro slots", {"split", "patterns only", "recall only"}, 1)
   params:set_action("slot_assign", function() dirtygrid = true end)
@@ -1101,7 +1132,7 @@ init = function()
   params:set_action("recall_mode", function(x) snapshot_mode = x == 2 and true or false dirtygrid = true end)
 
   -- midi params
-  params:add_group("midi settings", 2)
+  params:add_group("midi_params", "midi settings", 2)
   -- midi device
   build_midi_device_list()
   params:add_option("global_midi_device", "midi device", midi_devices, 1)
@@ -1110,8 +1141,8 @@ init = function()
   params:add_option("midi_trnsp","midi transport", {"off", "send"}, 1)
 
   -- global track control
-  params:add_group("track control", 7)
-  params:add_separator("control focused track")
+  params:add_group("focus_track_control", "track control", 8)
+  params:add_separator("control_focused_track", "control focused track")
   -- playback
   params:add_binary("track_focus_playback", "playback", "momentary", 0)
   params:set_action("track_focus_playback", function(v) if v == 1 then toggle_playback(focus) end end)
@@ -1130,38 +1161,42 @@ init = function()
   -- speed -
   params:add_binary("dec_focus_speed", "speed -", "momentary", 0)
   params:set_action("dec_focus_speed", function(v) if v == 1 then local i = focus local n = util.clamp(track[i].speed - 1, -3, 3) e = {} e.t = eSPEED e.i = i e.speed = n event(e) end end)
+  -- randomize
+  params:add_binary("focus_track_rand", "randomize", "momentary", 0)
+  params:set_action("focus_track_rand", function(v) if v == 1 then randomize(focus) end end)
 
   -- randomize settings
-  params:add_group("randomization", 15)
-  params:add_option("auto_rand","auto-randomize", {"off", "on"}, 1)
+  params:add_group("randomization_params", "randomization", 16)
+  params:add_option("auto_rand_rec","randomize @ rec", {"off", "on"}, 1)
+  params:add_option("auto_rand_play","randomize @ play", {"off", "on"}, 1)
 
-  params:add_separator("")
+  params:add_separator("randomize_track", "")
   params:add_option("rnd_transpose", "transpose", {"off", "on"}, 1)
   params:add_option("rnd_vol", "volume", {"off", "on"}, 1)
   params:add_option("rnd_pan", "pan", {"off", "on"}, 1)
   params:add_option("rnd_dir", "direction", {"off", "on"}, 2)
   params:add_option("rnd_loop", "loop", {"off", "on"}, 2)
 
-  params:add_separator("")
+  params:add_separator("randomize_speed", "")
   params:add_option("rnd_speed", "speed", {"off", "on"}, 2)
   params:add_number("rnd_uoct", "+ oct range", 0, 3, 2)
   params:add_number("rnd_loct", "- oct range", 0, 3, 2)
 
-  params:add_separator("")
+  params:add_separator("randomize_filter", "")
   params:add_option("rnd_cut", "cutoff", {"off", "on"}, 1)
   params:add_control("rnd_ucut", "upper freq", controlspec.new(20, 18000, 'exp', 1, 18000, "Hz"))
   params:add_control("rnd_lcut", "lower freq", controlspec.new(20, 18000, 'exp', 1, 20, "Hz"))
 
   -- params for tracks
-  params:add_separator("tracks")
+  params:add_separator("track_params", "tracks")
 
   audio.level_cut(1)
   audio.level_tape(1)
 
   for i = 1, 6 do
-    params:add_group("track "..i, 29)
+    params:add_group("track_group"..i, "track "..i, 30)
 
-    params:add_separator("tape")
+    params:add_separator("tape_params"..i, "tape")
     -- select buffer
     params:add_option(i.."buffer_sel", i.." buffer", {"main", "temp"}, 1)
     params:set_action(i.."buffer_sel", function(x) track[i].side = x - 1 set_buffer(i) end)
@@ -1199,7 +1234,7 @@ init = function()
     params:hide(i.."send_track6")
 
     -- filter params
-    params:add_separator("filter")
+    params:add_separator("filter_params"..i, "filter")
     -- cutoff
     params:add_control(i.."cutoff", i.." cutoff", controlspec.new(20, 18000, 'exp', 1, 18000, "Hz"))
     params:set_action(i.."cutoff", function(x) softcut.post_filter_fc(i, x) if view < vLFO and pageNum == 2 then dirtyscreen = true end end)
@@ -1214,7 +1249,7 @@ init = function()
     params:set_action(i.."post_dry", function(x) track[i].dry_level = x softcut.post_filter_dry(i, x) if view < vLFO and pageNum == 2 then dirtyscreen = true end end)
 
     -- warble params
-    params:add_separator("warble")
+    params:add_separator("warble_params"..i, "warble")
     -- warble amount
     params:add_number(i.."warble_amount", i.." amount", 0, 100, 10, function(param) return (param:get().." %") end)
     -- warble depth
@@ -1224,7 +1259,7 @@ init = function()
     params:set_action(i.."warble_freq", function(val) warble[i].freq = val * 2 end)
 
     -- track control
-    params:add_separator("track control")
+    params:add_separator("track_control_params"..i, "track control")
     -- playback
     params:add_binary(i.."track_playback", i.." playback", "momentary", 0)
     params:set_action(i.."track_playback", function(v) if v == 1 then toggle_playback(i) end end)
@@ -1243,6 +1278,9 @@ init = function()
     -- speed -
     params:add_binary(i.."dec_speed", i.." speed -", "momentary", 0)
     params:set_action(i.."dec_speed", function(n) if n == 1 then local n = util.clamp(track[i].speed - 1, -3, 3) e = {} e.t = eSPEED e.i = i e.speed = n event(e) end end)
+    -- randomize
+    params:add_binary(i.."track_rand", i.." randomize", "momentary", 0)
+    params:set_action(i.."track_rand", function(v) if v == 1 then randomize(i) end end)
 
     -- input options
     params:add_option(i.."input_options", i.." input options", {"L+R", "L IN", "R IN", "OFF"}, 1)
@@ -1277,7 +1315,7 @@ init = function()
   end
 
   -- params for modulation (hnds_mlre)
-  params:add_separator("modulation")
+  params:add_separator("modulation_sep", "modulation")
   for i = 1, 6 do lfo[i].lfo_targets = lfo_targets end
   lfo.init()
 
@@ -1289,11 +1327,8 @@ init = function()
 
   -- params for quant division
   params:add_option("quant_div", "quant div", div_options, 7)
-  params:set_action("quant_div", function(d) div = div_values[d] / 4 end)
+  params:set_action("quant_div", function(d) div = div_values[d] * 4 end)
   params:hide("quant_div")
-
-  -- params for clock tempo
-  params:set_action("clock_tempo", function() update_track_tempo() end)
 
   -- pset callback
   params.action_write = function(filename, name)
@@ -1363,7 +1398,7 @@ init = function()
     end
     -- and save the chunk
     tab.save(sesh_data, norns.state.data.."sessions/"..number.."/"..name.."_session.data")
-    print("finished writing '"..filename.."' as '"..name.."'")
+    print("finished writing pset:'"..name.."'")
   end
 
   params.action_read = function(filename)
@@ -1456,7 +1491,12 @@ init = function()
       end
       dirtyscreen = true
       dirtygrid = true
-      print("finished reading '"..filename.."'")
+      print("finished reading pset:'"..pset_id.."'")
+    end
+
+    params.action_delete = function(filename, name, number)
+      norns.system_cmd("rm -r "..norns.state.data.."sessions/"..number.."/")
+      print("finished deleting pset:'"..name.."'")
     end
   end
 
@@ -1620,8 +1660,10 @@ gridkey_nav = function(x, z)
       quantize = 1 - quantize
       if quantize == 0 then
         clock.cancel(quantizer)
+        clock.cancel(indicator)
       else
         quantizer = clock.run(update_q_clock)
+        indicator = clock.run(barpulse)
       end
     elseif x == 16 then alt = 1 if view == vLFO then dirtyscreen = true end
     elseif x == 15 and alt == 1 then set_view(vCLIP)
@@ -1650,7 +1692,7 @@ gridredraw_nav = function()
   g:led(3, 1, 2) -- vTRSP
   g:led(view, 1, 9) -- focus
   g:led(16, 1, alt == 1 and 15 or 9) -- alt
-  g:led(15, 1, quantize == 1 and 9 or 3) -- Q
+  g:led(15, 1, quantize == 1 and (flash and 15 or 9) or 3) -- Q
   g:led(14, 1, alt2 == 1 and 9 or 2) -- mod
   for i = 1, (params:get("slot_assign") == 1 and 4 or 8) do
     if params:get("slot_assign") ~= 3 then
