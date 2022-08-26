@@ -43,6 +43,20 @@ local declick = 0.06 -- 60ms delay
 local clip_gap = 1 -- 1s gap between clips
 local max_cliplength = 42 -- seconds per clip per buffer (max 8 clips in total)
 
+--ARC
+alt_mode_active={false, false, false, false}
+alt_mode_reverse= false
+
+local g = grid.connect()
+local a = arc.connect(1)
+
+local encoder_loop_sens = 500
+local encoder_scrub_sens = 200
+local encoder_speed_sens = 100
+local encoder_value_sens = 10
+
+local tau = math.pi * 2
+
 --for transpose scales
 local scale_options = {"major", "natural minor", "harmonic minor", "melodic minor", "dorian", "phrygian", "lydian", "mixolydian", "locrian", "custom"}
 
@@ -225,6 +239,7 @@ function event_exec(e)
     elseif e.action == "overdub_off" then pattern[e.i]:set_overdub(0)
     end
   end
+  arc_redraw()
 end
 
 -- patterns and recall
@@ -366,6 +381,10 @@ for i = 1, 6 do
   track[i].fade = 0
   track[i].buffer = 0
   track[i].side = 0
+
+  track[i].pos_arc = 0
+  track[i].speed_no_normalize = 0
+  track[i].rev_no_normalize = 0
 end
 
 set_clip_length = function(i, len, r_val)
@@ -485,6 +504,14 @@ function clip_resize(i) -- resize clip length oder track speed according to t_ma
     clip[track[i].clip].info = "repitch factor: "..string.format("%.2f", tempo / clip[track[i].clip].bpm)
   else
     clip[track[i].clip].info = "length: "..string.format("%.2f", resize).."s"
+  end
+end
+
+function update_track_tempo()
+  for i = 1, 6 do
+    if track[i].tempo_map == 1 then
+      clip_resize(i)
+    end
   end
 end
 
@@ -1117,6 +1144,9 @@ function midi.remove() -- MIDI remove callback
   )
 end
 
+
+
+
 -- init
 init = function()
 
@@ -1530,6 +1560,9 @@ init = function()
   tracktimer = metro.init(function() count_length() end, 0.01, -1)
   tracktimer:stop()
 
+  arc_redraw_timer = metro.init(function() arc_redraw() end, 1/30, -1)
+  arc_redraw_timer:start()
+
   -- threshold rec poll
   amp_in = {}
   local amp_src = {"amp_in_l", "amp_in_r"}
@@ -1566,6 +1599,7 @@ phase = function(n, x)
   -- calc softcut positon
   local pp = ((x - clip[track[n].clip].s) / clip[track[n].clip].l)
   local positon = math.floor(pp * 16)
+  track[n].pos_arc = pp
   -- calc grid position
   if track[n].rev == 0 then
     track[n].pos = positon + 1 % 16
@@ -1627,6 +1661,20 @@ update_rate = function(i)
 end
 
 -- user interface
+
+gridkey_arc = function(x,z)
+  if z==1 then
+    if x==1 then
+      for i=1,4 do
+        alt_mode_active[i]= not alt_mode_active[i]
+      end
+      alt_mode_reverse= not alt_mode_reverse
+    end
+    alt_mode_active[x-12]= not alt_mode_active[x-12]
+  end
+  dirtygrid=true
+end
+
 gridkey_nav = function(x, z)
   if z == 1 then
     if x == 1 then
@@ -1991,6 +2039,7 @@ v.redraw[vREC] = function()
 end
 
 v.gridkey[vREC] = function(x, y, z)
+  if y == 8 then gridkey_arc(x, z) end
   if y == 1 then gridkey_nav(x, z)
   elseif y > 1 and y < 8 then
     if z == 1 then
@@ -2156,6 +2205,7 @@ v.enc[vCUT] = v.enc[vREC]
 v.redraw[vCUT] = v.redraw[vREC]
 
 v.gridkey[vCUT] = function(x, y, z)
+  if y == 8 then gridkey_arc(x,z) end
   if z == 1 and held[y] then heldmax[y] = 0 end
   held[y] = held[y] + (z * 2 - 1)
   if held[y] > heldmax[y] then heldmax[y] = held[y] end
@@ -2701,6 +2751,7 @@ v.redraw[vCLIP] = function()
 end
 
 v.gridkey[vCLIP] = function(x, y, z)
+  if y == 8 then gridkey_arc(x,z) end
   if y == 1 then gridkey_nav(x, z)
   elseif z == 1 then
     if y > 1 and y < 8 and x < 9 then
@@ -2793,4 +2844,225 @@ function cleanup()
     pattern[i] = nil
   end
   grid.add = function() end
+end
+
+------- arc
+function ch_toggle(i,x)
+  softcut.play(i,x)
+  softcut.rec(i,x)
+end
+
+set_phase_quant = function(i,q, focus)
+  if i==focus then
+    softcut.phase_quant(i,0,0.001)
+  else
+    softcut.phase_quant(i,q)
+  end
+end
+
+-- SUPPORT 2011 ARC click
+function a.key(n, z)
+  if z == 1 then
+    alt_mode_active[n] = not alt_mode_active[n]
+  end
+  dirtygrid=true
+end
+
+function a.delta(n, d)
+  --FIRST ENCODER
+  if n == 1 then
+    -- ADJUST LOOP
+    print("track[focus].loop "..track[focus].loop)
+    if track[focus].loop == 1 then
+      if alt_mode_active[1] == false then
+        local new_loop_start = track[focus].loop_start+(d/encoder_loop_sens)
+        print("adjust loop "..n)
+        print((math.abs(new_loop_start)-1).." <= "..track[focus].loop_end)
+        if math.abs(new_loop_start)-1 <= track[focus].loop_end then
+          track[focus].loop_start=new_loop_start
+        end
+      else
+        local new_loop_end = track[focus].loop_end+(d/encoder_loop_sens)
+        print("new_loop_end " .. new_loop_end)
+        if math.abs(new_loop_end)+1 >= track[focus].loop_start then
+          track[focus].loop_end=new_loop_end
+        end
+      end
+      local lstart = clip[track[focus].clip].s + (track[focus].loop_start-1)/16*clip[track[focus].clip].l
+      local lend = clip[track[focus].clip].s + (track[focus].loop_end)/16*clip[track[focus].clip].l
+      print("lstart "..lstart .. " lend "..lend)
+      softcut.loop_start(focus,lstart)
+      softcut.loop_end(focus,lend)
+    else
+      --SCRUB
+      if alt_mode_active[1] == false then
+        local new_position = (track[focus].pos_arc+d/encoder_scrub_sens)
+        local cut = 0
+        if new_position > 0 then
+          cut = (new_position)*clip[track[focus].clip].l + clip[track[focus].clip].s
+        else
+          cut = clip[track[focus].clip].e + (new_position)*clip[track[focus].clip].l
+        end
+        if cut > clip[track[focus].clip].e then
+          cut = cut - clip[track[focus].clip].l
+        end
+        softcut.position(focus,cut)
+        if track[focus].play == 0 then
+          track[focus].play = 1
+          ch_toggle(focus,1)
+          if d<0 then
+            print("d"..d)
+            track[focus].rev = 1
+          else
+            track[focus].rev = 0
+          end
+          update_rate(focus)
+          dirtygrid=true
+        end
+      else
+        if d>0 then
+          track[focus].play = 1
+          ch_toggle(focus,1)
+
+        else
+          track[focus].play = 0
+          ch_toggle(focus,0)
+
+        end
+      end
+      local q = calc_quant(focus)
+      local off = calc_quant_off(focus, q)
+      set_phase_quant(focus, q, focus)
+    end
+  --SECOND ENCODER
+  --adjust Speed
+  elseif n == 2 then
+    --update Speed
+    if not alt_mode_active[2] then
+      track[focus].speed_no_normalize = track[focus].speed_no_normalize + d/encoder_speed_sens
+      local new_speed = math.floor(track[focus].speed_no_normalize)
+      if new_speed < 4 and new_speed > -4 then
+        track[focus].speed = new_speed
+        update_rate(focus)
+        dirtygrid=true
+      end
+    else
+      --update Direction
+      track[focus].rev_no_normalize = track[focus].rev_no_normalize - d/encoder_speed_sens
+      local new_direction = math.floor(track[focus].rev_no_normalize)
+      if new_direction < 2 and new_direction > -1 then
+        track[focus].rev=new_direction
+        update_rate(focus)
+        dirtygrid=true
+      end
+    end
+
+    --update_rate(e.i)
+  -- THIRD ENCODER
+  elseif n == 3 then
+    if alt_mode_active[3] == false then
+      params:delta(focus.."rate_slew", d/encoder_value_sens)
+    else
+      -- trsp = (params:get(focus.."transpose"))
+      -- print(trsp - (d/encoder_value_sens))
+      -- e = {}
+      -- e.t = eTRSP
+      -- e.i = i
+      -- e.trsp = trsp - (d/encoder_value_sens)
+      -- event(e)
+      -- value is 1 - 15
+      params:delta(focus.."transpose", d/encoder_value_sens)
+    end
+
+  -- FOURTH ENCODER
+  elseif n == 4 then
+    if alt_mode_active[4] == false then
+      params:delta(focus.."vol", d/encoder_value_sens)
+    else
+      params:delta(focus.."pan", d/encoder_value_sens)
+    end
+  end
+  dirtygrid=true
+end
+
+function arc_redraw()
+  a:all(0)
+  running_position = (track[focus].pos_arc)
+  -- EDIT LOOP
+  start_position = (math.floor(((track[focus].loop_start-1)/16)*64))
+  end_position = (math.floor(((track[focus].loop_end)/16)*64))
+  a:segment(1, running_position * tau, tau * running_position + 0.1, 15)
+  if alt_mode_active[1] == true and track[focus].loop == 0  then
+    a:segment(1, running_position * tau, tau * running_position + 0.3, 15)
+  end
+
+  if track[focus].loop == 1 then
+    -- hightlight start
+    if alt_mode_active[1] == false then
+      a:led(1, start_position, 15)
+      a:led(1, end_position + 1, 6)
+    else
+      -- hightlight end
+      a:led(1, start_position, 6)
+      a:led(1, end_position + 1, 15)
+    end
+  end
+
+  -- EDIT SPEED
+  if alt_mode_active[2] == false then
+    for i=-3,3 do a:led(2, (i*5 + 1), 8) end
+    a:led(2,  1, 5)
+    a:led(2, (track[focus].speed*5 + 1), 15)
+  else
+    if track[focus].rev == 0 then
+      for i=10,13 do a:led(2, (i + 1), 5) end
+    else
+      for i=-13,-10 do a:led(2, (i + 1), 5) end
+    end
+  end
+
+  -- SHOW FOCUS TRACK
+  for i=1,6 do
+    if 7-i==focus then
+      a:led (2, 29+i, 15)
+    else
+      a:led (2, 29+i, 5)
+    end
+  end
+
+  --ADJUST SLEW
+  if alt_mode_active[3] == false then
+    rate_slew=math.floor(params:get(focus.."rate_slew")*64)
+    a:led(3, rate_slew, 5)
+    a:led(3, rate_slew+1, 15)
+    a:led(3, rate_slew+2, 5)
+  else
+    speed_mod=(params:get(focus.."transpose"))
+    a:led(3, 1, 15)
+    a:segment(3, speed_mod, speed_mod + 1, 10)
+  end
+
+
+  -- EDIT VOLUME
+  if alt_mode_active[4] == false then
+    adjusted_volume=math.floor(params:get(focus.."vol")*64)
+    for i=1,64 do
+      if i < adjusted_volume then
+        a:led (4, i, 1)
+      end
+    end
+    for i=0,15 do
+      if adjusted_volume-i>0 then
+        a:led (4, adjusted_volume-i, 15-i)
+      end
+    end
+  else
+    adjusted_pan=math.floor(params:get(focus.."pan")*16)
+    a:led (4, 1, 5)
+    a:led (4, 17, 7)
+    a:led (4, -15, 5)
+    a:led (4, adjusted_pan + 1, 12)
+
+  end
+  a:refresh()
 end
