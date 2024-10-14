@@ -2,13 +2,43 @@
 local grd = {}
 
 function grd.nav(x, z, pos)
+  print("x:"..x.." z:"..z.." alt:"..alt.." pos:"..pos)
   if z == 1 then
     if x == 1 then
       if alt == 1 then
         clear_splice(track_focus)
       else
+
+        -- g:all(0)
+        -- g:intensity(6)
+
+        local view = pos == "o" and grido_view or gridz_view
+        main_pageNum = 1
+        dirtyscreen = true
+        dirtygrid = true
+        -- if view == vREC then
+        --   -- set_gridview(vPATTERNS, pos)
+        --   -- set_view(vPATTERNS)
+        --   hardwareredraw()
+        -- else
+          set_gridview(vREC, pos)
+          set_view(vMAIN)
+          hardwareredraw()
+          -- grd.drawnav(1)
+        -- end
+
+        -- dirtygrid = true
+        -- -- page_redraw(vREC)
+        -- gridredraw()
+
+        -- dirtygrid = true
+        -- g:refresh()
         set_gridview(vREC, pos)
         set_view(vMAIN)
+        -- set_view(vREC)
+        -- page_redraw(vREC)
+        grd.drawnav(1)
+         -- refresh the LEDs
       end
     elseif x == 2 then
       if alt == 1 then
@@ -25,14 +55,16 @@ function grd.nav(x, z, pos)
         set_gridview(vTRSP, pos)
         set_view(vMAIN)
       end
-    elseif x == 4 and alt == 0 then
-      local view = pos == "o" and grido_view or gridz_view
-      if view == vLFO then
-        set_gridview(vENV, pos)
-        set_view(vENV)
-      else
-        set_gridview(vLFO, pos)
-        set_view(vLFO)
+    elseif x == 4 then
+      if alt == 0 then
+        local view = pos == "o" and grido_view or gridz_view
+        if view == vLFO then
+          set_gridview(vENV, pos)
+          set_view(vENV)
+        else
+          set_gridview(vLFO, pos)
+          set_view(vLFO)
+        end
       end
     elseif x == 15 and alt == 0 and mod == 0 and pos == "o" then
       quantizing = not quantizing
@@ -235,8 +267,10 @@ function grd.drawnav(y)
         elseif pattern[i].count > 0 then
           g:led(i + 4, y, 9)
         else
-          g:led(i + 4, y, 4)
+          g:led(i + 4, y, 6) -- 2
         end
+      else
+        g:led(i + 4, y, 15) -- 2
       end
     end
     for i = (macro_slot_mode == 1 and 5 or 1), 8 do
@@ -391,24 +425,7 @@ function grd.rec_keys(x, y, z, offset)
       track[i].fade = 1 - track[i].fade
       set_rec(i)
     elseif x == 2 and z == 1 then
-      track[i].oneshot = 1 - track[i].oneshot
-      for n = 1, 6 do
-        if n ~= i then
-          track[n].oneshot = 0
-        end
-      end
-      armed_track = i
-      arm_thresh_rec(i) -- amp_in poll starts
-      update_dur(i)  -- duration of oneshot is set
-      if alt == 1 then -- if alt then go into autolength mode and stop track
-        autolength = true
-        local e = {}
-        e.t = eSTOP
-        e.i = i
-        event(e)
-      else
-        autolength = false
-      end
+      threshold_rec(i)
     elseif x == 16 and alt == 0 and mod == 0 and z == 1 then
       toggle_playback(i)
     elseif x == 16 and alt == 0 and mod == 1 and z == 1 then
@@ -437,6 +454,37 @@ function grd.rec_keys(x, y, z, offset)
       grd.cutfocus_keys(x, z)
     end
   end
+end
+
+function threshold_rec(i)
+  -- START BLINK HERE!!
+  
+  track[i].oneshot = 1 - track[i].oneshot
+  if track[i].oneshot == 0 then
+    m:note_on(CC_OFFSET_REC + REC_TRACK - 1, 0, 1)
+    REC_TRACK = 0
+  else
+    REC_TRACK = i
+  end
+
+  for n = 1, 6 do
+    if n ~= i then
+      track[n].oneshot = 0
+    end
+  end
+  armed_track = i
+  arm_thresh_rec(i) -- amp_in poll starts
+  update_dur(i)  -- duration of oneshot is set
+  if alt == 1 then -- if alt then go into autolength mode and stop track
+    autolength = true
+    local e = {}
+    e.t = eSTOP
+    e.i = i
+    event(e)
+  else
+    autolength = false
+  end
+
 end
 
 function grd.rec_draw(offset)

@@ -1,0 +1,26 @@
+{
+  "file_info": {
+    "version": 1,
+    "kind": "project_metadata"
+  },
+  "installed_on": "2024-06-12T10:56:52.545751436-05:00",
+  "updated_on": "0001-01-01T00:00:00Z",
+  "project_url": "https://github.com/sonocircuit/mlre",
+  "catalog_entry": {
+    "project_name": "mlre",
+    "project_url": "https://github.com/sonocircuit/mlre",
+    "author": "sonocircuit",
+    "description": "extended version of mlr",
+    "discussion_url": "https://llllllll.co/t/mlre/57371",
+    "documentation_url": "https://github.com/sonocircuit/mlre",
+    "tags": [
+      "sequencer",
+      "sampler",
+      "looper",
+      "delay",
+      "grid",
+      "arc",
+      "crow"
+    ]
+  }
+}

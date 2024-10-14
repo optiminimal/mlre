@@ -15,7 +15,7 @@
 
 norns.version.required = 231114
 
-m = midi.connect()
+m = midi.connect(1)
 a = arc.connect()
 g = grid.connect()
 
@@ -49,6 +49,7 @@ MAX_TAPELENGTH = 57
 DEFAULT_SPLICELEN = 4
 DEFAULT_BEATNUM = 4
 
+no_draw = false
 -- ui
 main_pageNum = 1
 lfo_pageNum = 1
@@ -75,6 +76,9 @@ pulse_key_mid = 1
 pulse_key_slow = 1
 pulse_bar = false
 pulse_beat = false
+
+rec_blink = 0
+REC_TRACK = 0
 
 view_message = ""
 
@@ -192,6 +196,23 @@ eGATEOFF = 12
 eSPLICE = 13
 eROUTE = 14
 
+-- ###############
+
+-- 16 -23
+-- button "M": 16 - 23    >> 2
+CC_OFFSET_CLR = 16
+
+-- button "S": 8 - 15    >> 1
+CC_OFFSET_BUF = 8
+
+-- button "R": 0 - 7     >> 0
+CC_OFFSET_REC = 0
+
+-- button "[ ]": 24 - 31 >> 3
+CC_OFFSET_PLY = 24
+
+-- ###############
+
 -- event funtions
 function event_record(e)
   for i = 1, 8 do
@@ -209,6 +230,92 @@ function event(e)
     end
     event_exec(e)
   end
+end
+
+m.event = function(data)
+  -- knobs: 01 - 08 
+  local CC_OFFSET_DUB = 32
+  -- sliders: 11 - 18
+  local CC_OFFSET_VOL = 40
+
+  -- 94     93      95       91       92
+  -- play | pause | record | rewind | fastforward
+  -- 255          255          255     255       255       255
+  -- backwards | forwards |  up  |  down  |  left  |  right
+  local CC_OFFSET_TRS = 60
+
+  -- print(params:list())
+  local NUM_TRACKS = 6
+
+  local msg = midi.to_msg(data)
+  -- tab.print(msg)
+  if msg.type == "cc" then
+    
+    print(msg.type..": "..msg.cc.." ch: "..msg.ch)
+
+    -- volume change
+    if CC_OFFSET_VOL <= msg.cc and msg.cc <= (CC_OFFSET_VOL + NUM_TRACKS) then
+      track_focus = msg.cc - CC_OFFSET_VOL + 1
+      arc_track_focus = track_focus
+      main_pageNum = 1
+      
+      -- print(params:get(track_focus.."vol"))
+      -- page_redraw(vMAIN, 1)
+    elseif CC_OFFSET_DUB <= msg.cc and msg.cc <= (CC_OFFSET_DUB + NUM_TRACKS) then
+      track_focus = msg.cc - CC_OFFSET_DUB + 1
+      arc_track_focus = track_focus
+
+      params:set_raw(track_focus.. "cutoff", msg.val/127)
+      page_redraw(vMAIN, 3)
+      main_pageNum = 3
+      
+      -- Midi.to_data(msg)
+    elseif CC_OFFSET_PLY <= msg.cc and msg.cc <= (CC_OFFSET_PLY + NUM_TRACKS) and msg.val ~= 0 then
+      track_focus = msg.cc - CC_OFFSET_PLY + 1
+      arc_track_focus = track_focus
+      toggle_playback(track_focus)
+    elseif CC_OFFSET_CLR <= msg.cc and msg.cc <= (CC_OFFSET_CLR + NUM_TRACKS) then
+      track_focus = msg.cc - CC_OFFSET_CLR + 1
+      arc_track_focus = track_focus
+      m:note_on(CC_OFFSET_CLR + track_focus - 1, msg.val, 1)
+      if msg.val ~= 0 then
+        clear_splice(track_focus)
+      end
+    elseif CC_OFFSET_BUF <= msg.cc and msg.cc <= (CC_OFFSET_BUF + NUM_TRACKS)  and msg.val ~= 0 then
+      track_focus = msg.cc - CC_OFFSET_BUF + 1
+      arc_track_focus = track_focus
+      local buffer = params:get(track_focus.."buffer_sel")
+      buffer = buffer == 1 and 2 or 1
+      m:note_on(CC_OFFSET_BUF + track_focus - 1, (buffer - 1) * 127, 1)
+      params:set(track_focus.."buffer_sel", buffer, false)
+    elseif CC_OFFSET_REC <= msg.cc and msg.cc <= (CC_OFFSET_REC + NUM_TRACKS)  and msg.val ~= 0 then
+      track_focus = msg.cc - CC_OFFSET_REC + 1
+      arc_track_focus = track_focus
+      if track[track_focus].rec == 1 then
+        toggle_rec(i)
+      else
+        threshold_rec(track_focus)
+      end
+    end
+    dirtyscreen = true
+    dirtygrid = true
+  elseif msg.type == "note_on" then
+    print(msg.type..": "..msg.note.." ch: "..msg.ch)
+    -- m:cc(21, 127, 1)
+    -- m:cc(31, 127, 1)
+    -- m:cc(41, 127, 1)
+    
+    
+  else
+    print(msg.type)
+  end
+  -- my_midi:send(data)
+  -- {144,60,127} = note on event for note 60 with velocity 127
+  
+  -- my_midi:program_change(val, ch)
+  -- my_midi:cc(cc, val, ch)
+  -- my_midi:note_on(note, vel, ch)
+  -- my_midi:start()
 end
 
 function update_q_clock()
@@ -244,14 +351,19 @@ end
 
 -- exec function
 function event_exec(e)
+  print("event_exec ")
   if e.t == eCUT then
+    print("eCUT #"..e.i)
     if track[e.i].loop == 1 then
+      print("__clear_loop #"..e.i)
       clear_loop(e.i)
     end
     local cut = (e.pos / 16) * clip[e.i].l + clip[e.i].s
     local q = track[e.i].rev == 1 and clip[e.i].l / 16 or 0
     softcut.position(e.i, cut + q)
     if track[e.i].play == 0 then
+      print("__record #"..e.i)
+
       track[e.i].play = 1
       track[e.i].beat_count = 0
       set_rec(e.i)
@@ -260,8 +372,12 @@ function event_exec(e)
     end
     dirtygrid = true
   elseif e.t == eSTOP then
+    print("eSTOP #"..e.i)
+    m:note_on(CC_OFFSET_PLY + e.i - 1, 0, 1)
     stop_track(e.i)
   elseif e.t == eSTART then
+    print("eSTART #"..e.i)
+    m:note_on(CC_OFFSET_PLY + e.i - 1, 127, 1)
     softcut.position(e.i, e.pos or track[e.i].cut)
     track[e.i].play = 1
     track[e.i].beat_count = 0
@@ -270,38 +386,48 @@ function event_exec(e)
     toggle_transport()
     dirtygrid = true
   elseif e.t == eLOOP then
+    print("eLOOP #"..e.i)
     make_loop(e.i, e.loop_start, e.loop_end)
   elseif e.t == eUNLOOP then
+    print("eUNLOOP #"..e.i)
     clear_loop(e.i)
   elseif e.t == eSPEED then
+    print("eSPEED #"..e.i)
     track[e.i].speed = e.speed
     update_rate(e.i)
     grid_page(vREC)
   elseif e.t == eREV then
+    print("eREV #"..e.i)
     track[e.i].rev = e.rev
     update_rate(e.i)
     dirtygrid = true
   elseif e.t == eMUTE then
+    print("eMUTE #"..e.i)
     track[e.i].mute = e.mute
     set_level(e.i)
   elseif e.t == eTRSP then
+    print("eTRSP #"..e.i)
     params:set(e.i.."transpose", e.val)
     grid_page(vCUT)
     grid_page(vTRSP)
   elseif e.t == eGATEON then
+    print("eGATEON #"..e.i)
     if env[e.i].active then
       env_gate_on(e.i)
     end
   elseif e.t == eGATEOFF then
+    print("eGATEOFF #"..e.i)
     if env[e.i].active then
       env_gate_off(e.i)
     end
   elseif e.t == eSPLICE then
+    print("eGATEOFF #"..e.i)
     track[e.i].splice_active = e.active
     set_clip(e.i)
     render_splice()
     dirtygrid = true
   elseif e.t == eROUTE then
+    print("eROUTE #"..e.i)
     if e.ch == 5 then
       track[e.i].t5 = e.route
     else
@@ -719,6 +845,7 @@ end
 --------------------- SOFTCUT FUNCTIONS -----------------------
 
 function toggle_rec(i) -- toggle recording and trigger chop function
+  print("toggle_rec #"..i)
   track[i].rec = 1 - track[i].rec
   set_rec(i)
   chop(i)
@@ -726,19 +853,38 @@ function toggle_rec(i) -- toggle recording and trigger chop function
 end
 
 function set_rec(i) -- set softcut rec and pre levels
+  
   if track[i].fade == 0 then
     if track[i].rec == 1 and track[i].play == 1 then
+      m:note_on(CC_OFFSET_REC + i - 1, 127, 1)
       softcut.pre_level(i, track[i].pre_level)
       softcut.rec_level(i, track[i].rec_level)
+      print("set_rec start #"..i)
     else
+      print("set_rec end #"..i)
+      rec_blink = 0
+      REC_TRACK = 0
+      m:note_on(CC_OFFSET_REC + i - 1, 0, 1)
+      if track[i].play == 1 then
+        m:note_on(CC_OFFSET_PLY + i - 1, 127, 1)
+      end
       softcut.pre_level(i, 1)
       softcut.rec_level(i, 0)
     end
   elseif track[i].fade == 1 then
     if track[i].rec == 1 and track[i].play == 1 then
+      print("set_rec start #"..i.." fade")
+      m:note_on(CC_OFFSET_REC + i - 1, 127, 1)
       softcut.pre_level(i, track[i].pre_level)
       softcut.rec_level(i, track[i].rec_level)
     else
+      print("set_rec end #"..i.." fade")
+      rec_blink = 0
+      REC_TRACK = 0
+      m:note_on(CC_OFFSET_REC + i - 1, 0, 1)
+      if track[i].play == 1 then
+        m:note_on(CC_OFFSET_PLY + i - 1, 127, 1)
+      end
       softcut.pre_level(i, track[i].pre_level)
       softcut.rec_level(i, 0)
     end
@@ -785,6 +931,7 @@ function get_pos(i, pos) -- get and store softcut position (callback)
 end
 
 function stop_track(i)
+  print("stop_track #"..i)
   softcut.query_position(i)
   track[i].play = 0
   trig[i].tick = 0
@@ -794,6 +941,7 @@ function stop_track(i)
 end
 
 function make_loop(i, lstart, lend)
+  print("make_loop #"..i)
   track[i].loop = 1
   track[i].loop_start = lstart
   track[i].loop_end = lend
@@ -806,6 +954,7 @@ function make_loop(i, lstart, lend)
 end
 
 function clear_loop(i)
+  show_message("# clearing loop "..i)
   track[i].loop = 0
   softcut.loop_start(i, clip[i].s) 
   softcut.loop_end(i, clip[i].e)
@@ -1019,6 +1168,7 @@ end
 --------------------- TRANSPORT FUNCTIONS -----------------------
 
 function toggle_playback(i)
+  print("toggle_playback #"..i)
   if track[i].play == 1 then
     local e = {t = eSTOP, i = i} event(e)
   else
@@ -1577,7 +1727,7 @@ function set_time_vars()
 end
 
 --------------------- CLOCK COROUTINES -----------------------
-
+-- pattern record blink
 function ledpulse_fast()
   pulse_key_fast = pulse_key_fast == 8 and 12 or 8
   for i = 1, 8 do
@@ -1893,7 +2043,7 @@ function init()
   -- macro params
   params:add_group("macro_params", "macros", 3)
   -- event recording slots
-  params:add_option("slot_assign", "macro slots", {"split", "patterns only", "recall only"}, 1)
+  params:add_option("slot_assign", "macro slots", {"split", "patterns only", "recall only"}, 2)
   params:set_action("slot_assign", function(option) macro_slot_mode = option dirtygrid = true end)
   if GRID_SIZE == 256 then params:hide("slot_assign") end
   -- recall mode
@@ -2106,7 +2256,7 @@ function init()
     params:add_separator("track_filter_params"..i, "track "..i.." filter")
     -- cutoff
     params:add_control(i.."cutoff", "cutoff", controlspec.new(20, 18000, 'exp', 1, 18000, ""), function(param) return (round_form(param:get(), 1, " hz")) end)
-    params:set_action(i.."cutoff", function(x) softcut.post_filter_fc(i, x) page_redraw(vMAIN, 3) end)
+    params:set_action(i.."cutoff", function(x) softcut.post_filter_fc(i, x) print(x) page_redraw(vMAIN, 3) end)
     -- filter q
     params:add_control(i.."filter_q", "filter q", controlspec.new(0.1, 4.0, 'exp', 0.01, 2.0, ""))
     params:set_action(i.."filter_q", function(x) softcut.post_filter_rq(i, x) page_redraw(vMAIN, 3) end)
@@ -2459,6 +2609,7 @@ function init()
   arc.add = arc_connected
   arc.remove = arc_removed
   grid.add = grid_connected
+  grid.remove = grid_removed
   midi.add = midi_connected
   midi.remove = midi_disconnected
 
@@ -2490,6 +2641,8 @@ function init()
  
   print("mlre loaded and ready. enjoy!")
 
+  norns.pset.read('/home/we/dust/data/mlre/mlre-01.pset')
+  
 end -- end of init
 
 
@@ -2558,6 +2711,7 @@ function set_view(x)
 end
 
 function key(n, z)
+  -- print("key: "..n.." z: "..z)
   if n == 1 then
     shift = z
     dirtyscreen = true
@@ -2570,7 +2724,8 @@ function enc(n, d)
   _enc(n, d)
 end
 
-function redraw()
+
+function redraw() 
   _redraw()
 end
 
@@ -2603,6 +2758,14 @@ function g.key(x, y, z)
 end
 
 function gridredraw()
+  -- rec blink redraw
+  -- print(armed_track)
+  if REC_TRACK > 0 and REC_TRACK < 7 then
+    if track[REC_TRACK].oneshot == 1 and track[REC_TRACK].rec == 0 then
+      m:note_on(CC_OFFSET_REC + REC_TRACK - 1, (rec_blink % 20 < 7) and 0 or 127, 1)
+      rec_blink = rec_blink + 1
+    end
+  end
   if GRID_SIZE == 128 then
     g:all(0)
     grd.drawnav(1)
@@ -2649,18 +2812,29 @@ function grid_page(view)
 end
 
 function hardwareredraw()
-  if dirtygrid then
+  if dirtygrid and not no_draw then
+    -- show_message("# hardwareredraw ".. (dirtygrid and "true" or "false") )
     gridredraw()
     dirtygrid = false
   end
   if arc_is then arcredraw() end
 end
 
+function grid_removed()
+  no_draw = true
+end
+
 function grid_connected()
+  no_draw = false
   if g.device then
     GRID_SIZE = g.device.cols * g.device.rows
+    
   end
+  print("GRID_SIZE "..GRID_SIZE)
+  --clock.sleep(100)
+  os.execute("sleep " .. tonumber(4))
   dirtygrid = true
+  show_message("# grid_connected ".. (dirtygrid and "true" or "false") )
   hardwareredraw()
 end
 
@@ -2967,6 +3141,7 @@ end
 
 function r()
   norns.script.load(norns.state.script)
+  norns.pset.read('/home/we/dust/data/mlre/mlre-01.pset')
 end
 
 function build_menu(i)
@@ -3078,6 +3253,7 @@ function cleanup()
     pattern[i] = nil
   end
   grid.add = function() end
+  grid.remove = function() end
   arc.add = function() end
   arc.remove = function() end
   midi.add = function() end

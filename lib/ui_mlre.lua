@@ -815,8 +815,10 @@ function ui.tape_key(n, z)
       view_presets = false
     end
   elseif view_track_send then
+    show_message("view_track_send")
     -- do nothing
   else
+    show_message("tape view")
     -- tape view
     if shift == 0 then
       if n == 2 then
